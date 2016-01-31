@@ -1,0 +1,111 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Edmund Tran"
+date: "January 30, 2016"
+output: html_document
+---
+
+The goal of this project is to predict how well someone is doing a barbell lift based on accelerometer data. We first read in the training and test set:
+
+```{r}
+trainset <- read.csv("pml-training.csv")
+testset <- read.csv("pml-testing.csv")
+```
+
+Taking a look at the data, it seems that it is sorted by classe, a variable that acts as the "grade" for how well the participant is performing the exercise. There are 160 variables total, so I decided to run a summary to get a sense of the predictors:
+
+```{r, eval=FALSE}
+summary(trainset)
+
+#1 to 7: ID features
+#8 to 11: good
+#12 to 36: missing data
+#37 to 49: good
+#50 to 59: missing data
+#60 to 68: good
+#69 to 83: missing data
+#84 to 86: good
+#87 to 101: missing data
+#102: good
+#103-112: missing data
+#113-124: good
+#125-139: missing data
+#140: good
+#141-150: missing data
+#152-159: good
+#160: OUTCOME
+```
+
+It seems like there were 19216 observations that were missing data on many of the variables. Since they represent so much of the sample, I decided to exclude the predictors that were NA or 0 for these observations.
+
+```{r}
+train2 <- trainset[,c(8:11,37:49,60:68,84:86,102,113:124,140,152:159,160)]
+#str(train2)
+```
+
+I was still left with 51 predictors, which is a lot, so I decided to see if any had low variation or were highly correlated with each other. There were a few of the latter type, so I whittled down the list of predictors a little more.
+
+```{r}
+library(caret)
+x = nearZeroVar(train2, saveMetrics = TRUE) 
+x[x[,"zeroVar"] + x[,"nzv"] > 0, ] 
+
+findCorrelation(cor(train2[,-52]))
+train3 <- train2[,-findCorrelation(cor(train2[,-52]))]
+```
+
+First I tried to fit a tree model using k-fold cross-validation:
+
+```{r}
+# k-fold
+folds <- createFolds(y = train3$classe, k = 5, list = TRUE, returnTrain = TRUE)
+
+# tree model
+library(rpart)
+library(rattle)
+accuracy <- NULL
+for (i in 1:5) {
+  tree <- train(classe ~ ., data = train3[folds[[i]],], preProcess=c("center", "scale"), method = "rpart")
+  prediction <- predict(tree, newdata = train3[-folds[[i]],])
+  accuracy[[i]] <- confusionMatrix(data = prediction, reference = train3[-folds[[i]],]$classe)$overall[1]
+}
+accuracy
+rattle::fancyRpartPlot(tree$finalModel)
+```
+
+As you can see, the accuracy was not great. But maybe the predictors it uses are especially significant, so I tried to use random forests with those five predictors on one of the folds. It was taking a long time to compute, so I researched random forest compute times and it seems like running this algorithm on over 10,000 observations is not a good idea.
+
+```{r}
+# trying again with a few hundred observations instead
+trainsample <- sample(1:19622, 500)
+rftrain <- train3[trainsample[1:300],]
+rftest <- train3[trainsample[401:500],]
+rfFit <- train(classe ~ pitch_forearm + magnet_belt_y + magnet_dumbbell_y + roll_forearm + accel_forearm_x, data = rftrain, method = "rf", prox=TRUE)
+
+#for plotting cluster centers
+clusterP <- classCenter(rftrain[,c("pitch_forearm", "magnet_belt_y")], rftrain$classe, rfFit$finalModel$prox)
+clusterP <- as.data.frame(clusterP)
+clusterP$classe <- rownames(clusterP)
+
+library(ggplot2)
+p <- qplot(pitch_forearm, magnet_belt_y, col=classe, data = rftrain)
+p + geom_point(aes(x=pitch_forearm, y=magnet_belt_y, col=classe),size=5, shape=4, data=clusterP)
+
+predrf <- predict(rfFit, rftest)
+table(predrf, rftest$classe)
+```
+
+The accuracy was better ([29+8+14+9+10]/100 = 70%), but not spectacular. Plotting the points on the top two variables from the tree model shows some clustering. However, the code ran quick enough that I thought it was worth trying again with all the predictors.
+
+```{r}
+rfFit2 <- train(classe ~ ., data = rftrain, method = "rf", prox=TRUE)
+predrf2 <- predict(rfFit2, rftest)
+table(predrf2, rftest$classe)
+```
+
+79% accuracy! Time to use the model on the test set:
+
+```{r, eval=FALSE}
+predrf3 <- predict(rfFit2, testset)
+predrf3
+```
